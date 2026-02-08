@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import './ModelPage.css';
-import { checkHealth, predictKnnPoint, getKnnDecisionBoundary, uploadKnnCsv } from '../api';
+import { checkHealth, predictKnnPoint, getKnnDecisionBoundary, uploadKnnData, trainKnnModel, uploadKnnCsv } from '../api';
+import ComplexKNNVisualization from '../components/ComplexKNNVisualization';
 function KNN() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('classification');
@@ -10,7 +11,7 @@ function KNN() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [backendStatus, setBackendStatus] = useState("connected");
-  
+
   // States for visualization
   const canvasRef = useRef(null);
   const boundaryCanvasRef = useRef(null);
@@ -25,24 +26,39 @@ function KNN() {
     x: { min: -8, max: 8 },
     y: { min: -8, max: 8 }
   };
-  
+
   // For point input dialog
   const [showPointDialog, setShowPointDialog] = useState(false);
   const [dialogPosition, setDialogPosition] = useState({ x: 0, y: 0 });
   const [tempPoint, setTempPoint] = useState(null);
   const [tempValue, setTempValue] = useState('');
-  
+
   // For decision boundary
   const [showDecisionBoundary, setShowDecisionBoundary] = useState(false);
   const [boundaryImg, setBoundaryImg] = useState(null);
-  
+
   // For hover effect on nearest neighbors
   const [hoveredPoint, setHoveredPoint] = useState(null);
   const [nearestNeighbors, setNearestNeighbors] = useState([]);
-  // CSV upload states
+
+  // Complex Data Support States
+  const [dataMode, setDataMode] = useState('interactive'); // 'interactive' or 'complex'
+  const [complexStep, setComplexStep] = useState(0); // 0: Upload, 1: Columns, 2: Visualize
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [availableColumns, setAvailableColumns] = useState([]);
+  const [dataPreview, setDataPreview] = useState([]);
+  const [totalRows, setTotalRows] = useState(0);
+  const [selectedFeatures, setSelectedFeatures] = useState([]);
+  const [targetColumn, setTargetColumn] = useState('');
+  const [complexModelMetrics, setComplexModelMetrics] = useState(null);
+  const [complexVisualization, setComplexVisualization] = useState(null);
+  const [complexMetadata, setComplexMetadata] = useState(null);
+  const [isClassification, setIsClassification] = useState(true);
+
+  // CSV upload states (Legacy - keeping for now or refactoring)
   const [csvFile, setCsvFile] = useState(null);
   const [csvHasHeader, setCsvHasHeader] = useState(true);
-  
+
   // Handle tab change
   const handleTabChange = (tab) => {
     setActiveTab(tab);
@@ -54,19 +70,19 @@ function KNN() {
     // Get the actual rendered size of the canvas (which might be different from the internal size)
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
-    
+
     const rect = canvas.getBoundingClientRect();
     const scaleFactorX = canvas.width / rect.width;
     const scaleFactorY = canvas.height / rect.height;
-    
+
     // Adjust the x and y by the scale factor
     const adjustedX = x * scaleFactorX;
     const adjustedY = y * scaleFactorY;
-    
+
     // Now convert to data coordinates
     const dataX = scale.x.min + (adjustedX / canvas.width) * (scale.x.max - scale.x.min);
     const dataY = scale.y.max - (adjustedY / canvas.height) * (scale.y.max - scale.y.min);
-    
+
     return { x: dataX, y: dataY };
   };
 
@@ -74,13 +90,13 @@ function KNN() {
   const handleClassificationCanvasClick = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
+
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    
+
     const dataPoint = screenToData(x, y);
-    
+
     if (pointsMode === 'train') {
       // Add point to training data
       const newPoint = {
@@ -88,9 +104,9 @@ function KNN() {
         x2: dataPoint.y,
         y: selectedClass
       };
-      
+
       console.log(`Adding training point at (${dataPoint.x.toFixed(2)}, ${dataPoint.y.toFixed(2)}) with class: ${newPoint.y}`);
-      
+
       setTrainingPoints([...trainingPoints, newPoint]);
       // Hide decision boundary if it was showing
       if (showDecisionBoundary) {
@@ -103,44 +119,44 @@ function KNN() {
         x1: dataPoint.x,
         x2: dataPoint.y
       };
-      
+
       setPredictPoints([...predictPoints, newPoint]);
     }
   };
-  
+
   // Handle canvas click for regression
   const handleRegressionCanvasClick = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
+
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    
+
     const dataPoint = screenToData(x, y);
-    
+
     if (pointsMode === 'train') {
       // Store temporary point and show dialog
       setTempPoint({
         x1: dataPoint.x,
         x2: dataPoint.y
       });
-      
+
       // Position dialog near click but ensure it stays on screen
       const dialogWidth = 200;
       const dialogHeight = 120;
       let dialogX = e.clientX - (dialogWidth / 2);
       let dialogY = e.clientY - dialogHeight - 10; // position above cursor
-      
+
       // Adjust if off screen
       if (dialogX < 10) dialogX = 10;
       if (dialogX > window.innerWidth - dialogWidth - 10) dialogX = window.innerWidth - dialogWidth - 10;
       if (dialogY < 10) dialogY = e.clientY + 10; // position below cursor instead
-      
+
       setDialogPosition({ x: dialogX, y: dialogY });
       setTempValue('');
       setShowPointDialog(true);
-      
+
       // Hide decision boundary if it was showing
       if (showDecisionBoundary) {
         setShowDecisionBoundary(false);
@@ -152,75 +168,75 @@ function KNN() {
         x1: dataPoint.x,
         x2: dataPoint.y
       };
-      
+
       setPredictPoints([...predictPoints, newPoint]);
     }
   };
-  
+
   // Handle canvas mouse move for hover effect
   const handleCanvasMouseMove = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
+
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    
+
     const dataPoint = screenToData(x, y);
-    
+
     // Find if mouse is near any prediction point (within a small radius)
     const hoverRadius = 0.5; // Data units
     let foundPoint = null;
-    
+
     // Check all prediction points
     for (const point of predictions.length > 0 ? predictions : predictPoints) {
       const dist = Math.sqrt(
-        Math.pow(point.x1 - dataPoint.x, 2) + 
+        Math.pow(point.x1 - dataPoint.x, 2) +
         Math.pow(point.x2 - dataPoint.y, 2)
       );
-      
+
       if (dist < hoverRadius) {
         foundPoint = point;
         break;
       }
     }
-    
+
     if (foundPoint !== hoveredPoint) {
       setHoveredPoint(foundPoint);
-      
+
       if (foundPoint && trainingPoints.length > 0) {
         // Find k nearest neighbors to this point
         const k = neighbors;
         const distances = trainingPoints.map(tp => ({
           point: tp,
           distance: Math.sqrt(
-            Math.pow(tp.x1 - foundPoint.x1, 2) + 
+            Math.pow(tp.x1 - foundPoint.x1, 2) +
             Math.pow(tp.x2 - foundPoint.x2, 2)
           )
         }));
-        
+
         // Sort by distance and take the k nearest
         distances.sort((a, b) => a.distance - b.distance);
         const nearest = distances.slice(0, k).map(d => d.point);
-        
+
         setNearestNeighbors(nearest);
       } else {
         setNearestNeighbors([]);
       }
     }
   };
-  
+
   // Handle canvas mouse leave
   const handleCanvasMouseLeave = () => {
     setHoveredPoint(null);
     setNearestNeighbors([]);
   };
-  
+
   // Handle dialog confirmation
   const handleDialogConfirm = () => {
     // Validate input is a number
     const numValue = parseFloat(tempValue);
-    
+
     if (tempPoint && !isNaN(numValue)) {
       // Add point to training data with value
       const newPoint = {
@@ -228,7 +244,7 @@ function KNN() {
         x2: tempPoint.x2,
         y: tempValue
       };
-      
+
       setTrainingPoints([...trainingPoints, newPoint]);
       setShowPointDialog(false);
       setTempPoint(null);
@@ -239,7 +255,7 @@ function KNN() {
       // Keep dialog open
     }
   };
-  
+
   // Handle canvas click based on active tab
   const handleCanvasClick = (e) => {
     if (activeTab === 'classification') {
@@ -255,18 +271,18 @@ function KNN() {
       setError('Need at least 1 training point to make predictions');
       return;
     }
-    
+
     if (predictPoints.length < 1) {
       setError('No prediction points added. Click in predict mode to add points to predict.');
       return;
     }
-    
+
     try {
       setLoading(true);
       setError(null);
-      
+
       const predictions = [];
-      
+
       // Make prediction for each point
       for (const point of predictPoints) {
         // Send explicit mode to the backend
@@ -277,7 +293,7 @@ function KNN() {
           predict_point: [point.x1, point.x2],
           mode: activeTab // Explicitly send 'classification' or 'regression'
         };
-        
+
         console.log("Sending prediction request with data:", {
           "X sample": apiData.X.slice(0, 2),
           "y sample": apiData.y.slice(0, 2),
@@ -286,20 +302,20 @@ function KNN() {
           "predict_point": apiData.predict_point,
           "n_neighbors": apiData.n_neighbors
         });
-        
+
         const result = await predictKnnPoint(apiData);
-        
+
         console.log("Received prediction result:", result);
-        
+
         predictions.push({
           ...point,
           predictedClass: result.predicted_class
         });
       }
-      
+
       // Update predictions
       setPredictions(predictions);
-      
+
     } catch (err) {
       setError('Error making prediction: ' + err.message);
       console.error(err);
@@ -307,18 +323,18 @@ function KNN() {
       setLoading(false);
     }
   };
-  
+
   // Generate decision boundary
   const generateDecisionBoundary = async () => {
     if (trainingPoints.length < 5) {
       setError('Need at least 5 training points to generate a decision boundary');
       return;
     }
-    
+
     try {
       setLoading(true);
       setError(null);
-      
+
       // Send explicit mode to the backend
       const apiData = {
         X: trainingPoints.map(p => [p.x1, p.x2]),
@@ -326,7 +342,7 @@ function KNN() {
         n_neighbors: parseInt(neighbors),
         mode: activeTab // Explicitly send 'classification' or 'regression'
       };
-      
+
       console.log("Generating decision boundary with data:", {
         "X sample": apiData.X.slice(0, 2),
         "y sample": apiData.y.slice(0, 2),
@@ -334,9 +350,9 @@ function KNN() {
         "mode": apiData.mode,
         "n_neighbors": apiData.n_neighbors
       });
-      
+
       const result = await getKnnDecisionBoundary(apiData);
-      
+
       // Set the boundary image from base64 data
       if (result.decision_boundary) {
         setBoundaryImg(`data:image/png;base64,${result.decision_boundary}`);
@@ -344,7 +360,7 @@ function KNN() {
       } else {
         setError('No decision boundary data received');
       }
-      
+
     } catch (err) {
       setError('Error generating decision boundary: ' + err.message);
       console.error(err);
@@ -364,7 +380,96 @@ function KNN() {
     setBoundaryImg(null);
     setHoveredPoint(null);
     setNearestNeighbors([]);
+    // Reset complex data states if needed or keep them separate
   };
+
+  const resetComplexData = () => {
+    setComplexStep(0);
+    setUploadedFile(null);
+    setAvailableColumns([]);
+    setDataPreview([]);
+    setTotalRows(0);
+    setSelectedFeatures([]);
+    setTargetColumn('');
+    setComplexModelMetrics(null);
+    setComplexVisualization(null);
+    setComplexMetadata(null);
+  };
+
+  // --- Complex Data Handlers ---
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await uploadKnnData(file);
+      setUploadedFile({ name: file.name, size: file.size });
+      setAvailableColumns(result.columns);
+      setDataPreview(result.preview);
+      setTotalRows(result.total_rows);
+      setComplexStep(1); // Move to column selection
+    } catch (err) {
+      setError(err.message || 'Failed to upload file');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleFeature = (col) => {
+    if (selectedFeatures.includes(col)) {
+      setSelectedFeatures(selectedFeatures.filter(c => c !== col));
+    } else {
+      setSelectedFeatures([...selectedFeatures, col]);
+    }
+  };
+
+  const handleTrainComplexModel = async () => {
+    if (selectedFeatures.length === 0) {
+      setError("Please select at least one feature column.");
+      return;
+    }
+    if (!targetColumn) {
+      setError("Please select a target column.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await trainKnnModel({
+        features: selectedFeatures,
+        target: targetColumn,
+        n_neighbors: neighbors,
+        is_classification: isClassification
+      });
+
+      setComplexModelMetrics(result.metrics);
+      setComplexMetadata(result.metadata);
+      setComplexVisualization({
+        X: result.X,
+        y: result.y,
+        type: result.visualization_type,
+        classes: result.classes,
+        validation_curve: result.validation_curve,
+        confusion_matrix: result.confusion_matrix,
+        y_test: result.y_test,
+        y_pred: result.y_pred
+      });
+      setComplexStep(2); // Move to visualization
+    } catch (err) {
+      setError(err.message || 'Failed to train model');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   // Handle Escape key press to close dialog
   useEffect(() => {
@@ -373,7 +478,7 @@ function KNN() {
         setShowPointDialog(false);
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showPointDialog]);
@@ -381,32 +486,32 @@ function KNN() {
   // Canvas drawing effect
   useEffect(() => {
     if (!canvasRef.current) return;
-    
+
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    
+
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+
     // Draw grid and points
     drawCanvas();
-    
+
     function drawCanvas() {
       // Get actual canvas dimensions
       const canvasWidth = canvas.width;
       const canvasHeight = canvas.height;
-      
+
       // Clear the canvas
       ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-      
+
       // Draw grid
       ctx.strokeStyle = '#e5e7eb';
       ctx.lineWidth = 0.5;
-      
+
       // Calculate step size for grid lines (16 divisions for -8 to 8 range = 1 unit per division)
       const stepX = canvasWidth / 16;
       const stepY = canvasHeight / 16;
-      
+
       // Draw horizontal grid lines
       for (let i = 0; i <= 16; i++) {
         const y = i * stepY;
@@ -415,7 +520,7 @@ function KNN() {
         ctx.lineTo(canvasWidth, y);
         ctx.stroke();
       }
-      
+
       // Draw vertical grid lines
       for (let i = 0; i <= 16; i++) {
         const x = i * stepX;
@@ -424,65 +529,65 @@ function KNN() {
         ctx.lineTo(x, canvasHeight);
         ctx.stroke();
       }
-      
+
       // Draw X and Y axes with dotted lines
       ctx.strokeStyle = '#9ca3af'; // Medium gray color
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]); // Dotted line pattern
-      
+
       // X-axis (horizontal line at y=0)
       const yAxisPos = canvasHeight / 2; // y=0 position
       ctx.beginPath();
       ctx.moveTo(0, yAxisPos);
       ctx.lineTo(canvasWidth, yAxisPos);
       ctx.stroke();
-      
+
       // Y-axis (vertical line at x=0)
       const xAxisPos = canvasWidth / 2; // x=0 position
       ctx.beginPath();
       ctx.moveTo(xAxisPos, 0);
       ctx.lineTo(xAxisPos, canvasHeight);
       ctx.stroke();
-      
+
       // Reset line dash
       ctx.setLineDash([]);
-      
+
       // Draw axes labels
       ctx.fillStyle = '#4b5563';
       ctx.font = '12px Inter, sans-serif';
-      
+
       // X-axis labels
       for (let i = 0; i <= 16; i += 2) {
         const x = i * stepX;
         const value = scale.x.min + (i / 16) * (scale.x.max - scale.x.min);
         ctx.fillText(value.toFixed(0), x - 8, canvasHeight - 5);
       }
-      
+
       // Y-axis labels
       for (let i = 0; i <= 16; i += 2) {
         const y = i * stepY;
         const value = scale.y.max - (i / 16) * (scale.y.max - scale.y.min);
         ctx.fillText(value.toFixed(0), 5, y + 4);
       }
-      
+
       // Draw training points with smaller radius (6 instead of 8)
       trainingPoints.forEach(point => {
         // Correct position calculation - Map from data coordinates to canvas coordinates
         const x = ((point.x1 - scale.x.min) / (scale.x.max - scale.x.min)) * canvasWidth;
         const y = ((scale.y.max - point.x2) / (scale.y.max - scale.y.min)) * canvasHeight;
-        
+
         // Check if this point is one of the nearest neighbors
-        const isNearest = nearestNeighbors.some(np => 
+        const isNearest = nearestNeighbors.some(np =>
           np.x1 === point.x1 && np.x2 === point.x2 && np.y === point.y
         );
-        
+
         ctx.beginPath();
         ctx.arc(x, y, isNearest ? 8 : 6, 0, Math.PI * 2); // Bigger for nearest neighbors
-        
+
         if (activeTab === 'classification') {
           // Different color based on class for classification - compare as string
           const pointClass = point.y.toString();
-          
+
           // Darker version for nearest neighbors
           if (pointClass === '1') {
             ctx.fillStyle = isNearest ? 'rgba(30, 64, 175, 0.9)' : 'rgba(59, 130, 246, 0.7)'; // Blue
@@ -500,33 +605,33 @@ function KNN() {
           const r = Math.round(59 + (239 - 59) * normalizedValue);
           const g = Math.round(130 + (68 - 130) * normalizedValue);
           const b = Math.round(246 + (68 - 246) * normalizedValue);
-          
+
           // Darker for nearest neighbors
-          ctx.fillStyle = isNearest 
-            ? `rgba(${Math.max(0, r-30)}, ${Math.max(0, g-30)}, ${Math.max(0, b-30)}, 0.9)` 
+          ctx.fillStyle = isNearest
+            ? `rgba(${Math.max(0, r - 30)}, ${Math.max(0, g - 30)}, ${Math.max(0, b - 30)}, 0.9)`
             : `rgba(${r}, ${g}, ${b}, 0.7)`;
-          
+
           // Add text label for the value
           ctx.fillStyle = '#000000';
           ctx.font = '10px Arial';
           ctx.fillText(point.y, x + 10, y - 10);
-          
+
           // Reset fill style for the point
-          ctx.fillStyle = isNearest 
-            ? `rgba(${Math.max(0, r-30)}, ${Math.max(0, g-30)}, ${Math.max(0, b-30)}, 0.9)` 
+          ctx.fillStyle = isNearest
+            ? `rgba(${Math.max(0, r - 30)}, ${Math.max(0, g - 30)}, ${Math.max(0, b - 30)}, 0.9)`
             : `rgba(${r}, ${g}, ${b}, 0.7)`;
         }
-        
+
         ctx.fill();
         ctx.strokeStyle = isNearest ? '#000' : '#333';
         ctx.lineWidth = isNearest ? 2 : 1;
         ctx.stroke();
-        
+
         // If this is a nearest neighbor, draw a line to the hovered point
         if (isNearest && hoveredPoint) {
           const hpX = ((hoveredPoint.x1 - scale.x.min) / (scale.x.max - scale.x.min)) * canvasWidth;
           const hpY = ((scale.y.max - hoveredPoint.x2) / (scale.y.max - scale.y.min)) * canvasHeight;
-          
+
           ctx.beginPath();
           ctx.setLineDash([3, 3]);
           ctx.moveTo(x, y);
@@ -537,48 +642,48 @@ function KNN() {
           ctx.setLineDash([]);
         }
       });
-      
+
       // Draw points to predict (before prediction) with smaller radius
       if (predictions.length === 0) {
         predictPoints.forEach(point => {
           // Correct position calculation
           const x = ((point.x1 - scale.x.min) / (scale.x.max - scale.x.min)) * canvasWidth;
           const y = ((scale.y.max - point.x2) / (scale.y.max - scale.y.min)) * canvasHeight;
-          
+
           const isHovered = hoveredPoint && hoveredPoint.x1 === point.x1 && hoveredPoint.x2 === point.x2;
-          
+
           ctx.beginPath();
           ctx.arc(x, y, isHovered ? 8 : 6, 0, Math.PI * 2); // Bigger if hovered
-          
+
           // Gray color for unpredicted points
           ctx.fillStyle = isHovered ? 'rgba(107, 114, 128, 0.9)' : 'rgba(156, 163, 175, 0.7)';
-          
+
           ctx.fill();
           ctx.strokeStyle = isHovered ? '#000' : '#333';
           ctx.lineWidth = isHovered ? 2 : 1;
           ctx.stroke();
         });
       }
-      
+
       // Draw prediction results with smaller radius
       predictions.forEach(pred => {
         // Correct position calculation
         const x = ((pred.x1 - scale.x.min) / (scale.x.max - scale.x.min)) * canvasWidth;
         const y = ((scale.y.max - pred.x2) / (scale.y.max - scale.y.min)) * canvasHeight;
-        
+
         const isHovered = hoveredPoint && hoveredPoint.x1 === pred.x1 && hoveredPoint.x2 === pred.x2;
-        
+
         ctx.beginPath();
         ctx.arc(x, y, isHovered ? 8 : 6, 0, Math.PI * 2); // Bigger if hovered
-        
+
         if (activeTab === 'classification') {
           // Fill color based on predicted class with flexible matching
           const predClass = pred.predictedClass.toString();
-          
+
           // If class starts with 1 or equals 1 or 1.0, etc. -> blue
           if (predClass.startsWith('1') || Math.round(parseFloat(predClass)) === 1) {
             ctx.fillStyle = isHovered ? 'rgba(30, 64, 175, 0.9)' : 'rgba(59, 130, 246, 0.7)'; // Blue
-          } 
+          }
           // If class starts with 2 or equals 2 or 2.0, etc. -> red
           else if (predClass.startsWith('2') || Math.round(parseFloat(predClass)) === 2) {
             ctx.fillStyle = isHovered ? 'rgba(185, 28, 28, 0.9)' : 'rgba(239, 68, 68, 0.7)'; // Red
@@ -597,23 +702,23 @@ function KNN() {
           const r = Math.round(59 + (239 - 59) * normalizedValue);
           const g = Math.round(130 + (68 - 130) * normalizedValue);
           const b = Math.round(246 + (68 - 246) * normalizedValue);
-          
+
           // Darker if hovered
-          ctx.fillStyle = isHovered 
-            ? `rgba(${Math.max(0, r-30)}, ${Math.max(0, g-30)}, ${Math.max(0, b-30)}, 0.9)` 
+          ctx.fillStyle = isHovered
+            ? `rgba(${Math.max(0, r - 30)}, ${Math.max(0, g - 30)}, ${Math.max(0, b - 30)}, 0.9)`
             : `rgba(${r}, ${g}, ${b}, 0.7)`;
-          
+
           // Add text label for the predicted value
           ctx.fillStyle = '#000000';
           ctx.font = '10px Arial';
           ctx.fillText(pred.predictedClass, x + 10, y - 10);
-          
+
           // Reset fill style for the point
-          ctx.fillStyle = isHovered 
-            ? `rgba(${Math.max(0, r-30)}, ${Math.max(0, g-30)}, ${Math.max(0, b-30)}, 0.9)` 
+          ctx.fillStyle = isHovered
+            ? `rgba(${Math.max(0, r - 30)}, ${Math.max(0, g - 30)}, ${Math.max(0, b - 30)}, 0.9)`
             : `rgba(${r}, ${g}, ${b}, 0.7)`;
         }
-        
+
         // Dotted border to indicate prediction
         ctx.setLineDash([2, 2]);
         ctx.strokeStyle = isHovered ? '#000' : '#333';
@@ -626,7 +731,7 @@ function KNN() {
   }, [trainingPoints, predictPoints, predictions, scale, canvasDimensions, activeTab, hoveredPoint, nearestNeighbors]);
 
   return (
-    <motion.div 
+    <motion.div
       className="model-page"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -635,8 +740,8 @@ function KNN() {
       <div className="model-header">
         <button className="back-button" onClick={() => navigate('/')}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M19 12H5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            <path d="M12 19L5 12L12 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            <path d="M19 12H5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <path d="M12 19L5 12L12 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
           <span style={{ marginLeft: '0.5rem' }}>Back to Home</span>
         </button>
@@ -646,28 +751,28 @@ function KNN() {
       <p className="model-description">
         K-Nearest Neighbors is a versatile machine learning algorithm used for both classification and regression tasks.
         It makes predictions based on the k most similar data points in the training set.
-        <button 
-            onClick={() => navigate('/docs')} 
-            style={{
-                background: 'none',
-                border: 'none',
-                color: '#3b82f6',
-                cursor: 'pointer',
-                marginLeft: '8px',
-                padding: '0',
-                display: 'inline-flex',
-                alignItems: 'center'
-            }}
-            title="More information"
+        <button
+          onClick={() => navigate('/docs')}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#3b82f6',
+            cursor: 'pointer',
+            marginLeft: '8px',
+            padding: '0',
+            display: 'inline-flex',
+            alignItems: 'center'
+          }}
+          title="More information"
         >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="16" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
         </button>
       </p>
-      
+
       {backendStatus === "disconnected" && (
         <div className="backend-status error">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -680,15 +785,15 @@ function KNN() {
           </span>
         </div>
       )}
-      
+
       <div className="tabs">
-        <div 
+        <div
           className={`tab ${activeTab === 'classification' ? 'active' : ''}`}
           onClick={() => handleTabChange('classification')}
         >
           Classification
         </div>
-        <div 
+        <div
           className={`tab ${activeTab === 'regression' ? 'active' : ''}`}
           onClick={() => handleTabChange('regression')}
         >
@@ -696,549 +801,796 @@ function KNN() {
         </div>
       </div>
 
-      <div className="content-container" style={{ 
+      {/* Data Mode Toggle */}
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.5rem', gap: '1rem' }}>
+        <button
+          onClick={() => setDataMode('interactive')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            backgroundColor: dataMode === 'interactive' ? '#3b82f6' : '#e5e7eb',
+            color: dataMode === 'interactive' ? 'white' : '#4b5563',
+            border: 'none',
+            borderRadius: '0.5rem',
+            cursor: 'pointer',
+            fontWeight: '500',
+            fontSize: '1rem'
+          }}
+        >
+          Interactive Mode
+        </button>
+        <button
+          onClick={() => setDataMode('complex')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            backgroundColor: dataMode === 'complex' ? '#3b82f6' : '#e5e7eb',
+            color: dataMode === 'complex' ? 'white' : '#4b5563',
+            border: 'none',
+            borderRadius: '0.5rem',
+            cursor: 'pointer',
+            fontWeight: '500',
+            fontSize: '1rem'
+          }}
+        >
+          Complex Data Mode
+        </button>
+      </div>
+
+      <div className="content-container" style={{
         width: '100%',
         maxWidth: '100%',
         boxSizing: 'border-box',
         display: 'flex',
         flexDirection: 'column'
       }}>
-        <div style={{ 
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-          gap: '1.5rem',
-          width: '100%',
-          marginBottom: '1.5rem'
-        }}>
-          {/* Left column: Interactive Plot and Decision Boundary */}
-          <div style={{ 
+
+        {/* Interactive Mode Content */}
+        {dataMode === 'interactive' ? (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: '1.5rem',
             width: '100%',
-            gridColumn: '1 / 2',
-            gridRow: '1 / 3',
-            display: 'flex',
-            flexDirection: 'column'
+            marginBottom: '1.5rem'
           }}>
-            <div className="section-header">
-              <h2 className="section-title">KNN {activeTab === 'classification' ? 'Classification' : 'Regression'}</h2>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button 
-                  className="sample-data-button" 
-                  onClick={resetData}
-                  style={{
-                    backgroundColor: '#fee2e2',
-                    color: '#b91c1c'
-                  }}
-                >
-                  Reset Data
-                </button>
-              </div>
-            </div>
-            
-            {error && <div className="error-message">{error}</div>}
-
-            <div style={{ marginBottom: '1rem' }}>
-              <p style={{ color: '#4b5563', marginBottom: '0.5rem', lineHeight: '1.5' }}>
-                Click on the graph below to add data points. Current mode: <strong>{pointsMode === 'train' ? 'Training' : 'Prediction'}</strong>
-              </p>
-            </div>
-            
-            {/* Interactive Plot */}
-            <div style={{ 
-              marginBottom: '1rem',
-              border: '1px solid #e5e7eb', 
-              borderRadius: '0.75rem', 
-              overflow: 'hidden',
-              position: 'relative',
-              backgroundColor: '#f9fafb',
-              boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)',
+            {/* Left column: Interactive Plot and Decision Boundary */}
+            <div style={{
               width: '100%',
-              height: '0',
-              paddingBottom: '100%' 
+              gridColumn: '1 / 2',
+              gridRow: '1 / 3',
+              display: 'flex',
+              flexDirection: 'column'
             }}>
-              <div style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0
-              }}>
-                <canvas 
-                  ref={canvasRef}
-                  width={canvasDimensions.width}
-                  height={canvasDimensions.height}
-                  onClick={handleCanvasClick}
-                  onMouseMove={handleCanvasMouseMove}
-                  onMouseLeave={handleCanvasMouseLeave}
-                  style={{ 
-                    display: 'block', 
-                    cursor: 'crosshair',
-                    width: '100%',
-                    height: '100%'
-                  }}
-                />
-              </div>
-              
-              <div style={{
-                position: 'absolute',
-                bottom: '10px',
-                right: '10px',
-                padding: '4px 8px',
-                backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                borderRadius: '4px',
-                fontSize: '0.8rem',
-                color: '#4b5563',
-                pointerEvents: 'none'
-              }}>
-                {pointsMode === 'train' ? 'Click to add training point' : 'Click to add prediction point'}
-              </div>
-            </div>
-            
-            {/* Statistics */}
-            <div style={{ 
-              marginTop: '0.5rem',
-              marginBottom: '1rem',
-              backgroundColor: '#f9fafb', 
-              padding: '1rem', 
-              borderRadius: '0.5rem',
-              border: '1px solid #e5e7eb',
-              width: '100%'
-            }}>
-              <p style={{ fontWeight: '500', marginBottom: '0.5rem', color: '#4b5563' }}>
-                Statistics:
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <strong>Training Points:</strong> {trainingPoints.length}
-                </div>
-                <div>
-                  <strong>Points to Predict:</strong> {predictPoints.length}
-                </div>
-                <div>
-                  <strong>Predictions Made:</strong> {predictions.length}
-                </div>
-              </div>
-
-              {/* CSV Upload (Training data from CSV) */}
-              <div style={{ 
-                marginTop: '0.75rem',
-                marginBottom: '1.5rem',
-                backgroundColor: 'white', 
-                padding: '1rem', 
-                borderRadius: '6px', 
-                border: '1px solid #e5e7eb',
-                width: '100%'
-              }}>
-                <h3 style={{ marginBottom: '0.75rem', fontSize: '1.05rem', fontWeight: '500' }}>Upload CSV (x1,x2,y)</h3>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={(e) => setCsvFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
-                  style={{ marginBottom: '0.5rem' }}
-                />
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  <input
-                    id="csv-header"
-                    type="checkbox"
-                    checked={csvHasHeader}
-                    onChange={(e) => setCsvHasHeader(e.target.checked)}
-                  />
-                  <label htmlFor="csv-header" style={{ color: '#4b5563' }}>File has header row</label>
-                </div>
+              <div className="section-header">
+                <h2 className="section-title">KNN {activeTab === 'classification' ? 'Classification' : 'Regression'}</h2>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
-                    onClick={async () => {
-                      if (!csvFile) {
-                        setError('Please select a CSV file to upload');
-                        return;
-                      }
-
-                      try {
-                        setLoading(true);
-                        setError(null);
-                        const result = await uploadKnnCsv(csvFile, csvHasHeader);
-                        if (result.error) {
-                          setError(result.error);
-                        } else {
-                          // Map to trainingPoints format
-                          const mapped = result.X.map((row, i) => ({ x1: parseFloat(row[0]), x2: parseFloat(row[1]), y: result.y[i] }));
-                          setTrainingPoints(mapped);
-                          setPredictPoints([]);
-                          setPredictions([]);
-                        }
-                      } catch (err) {
-                        setError(err?.error || err.message || 'CSV upload failed');
-                        console.error(err);
-                      } finally {
-                        setLoading(false);
-                      }
-                    }}
+                    className="sample-data-button"
+                    onClick={resetData}
                     style={{
-                      padding: '0.6rem 0.9rem',
-                      backgroundColor: '#10b981',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: '500'
+                      backgroundColor: '#fee2e2',
+                      color: '#b91c1c'
                     }}
                   >
-                    Upload CSV
-                  </button>
-                  <button
-                    onClick={() => { setCsvFile(null); setCsvHasHeader(true); setTrainingPoints([]); }}
-                    style={{
-                      padding: '0.6rem 0.9rem',
-                      backgroundColor: '#f3f4f6',
-                      color: '#374151',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: '500'
-                    }}
-                  >
-                    Clear
+                    Reset Data
                   </button>
                 </div>
               </div>
-            </div>
-            
-            {/* Decision boundary - MOVED BELOW and SMALLER */}
-            {showDecisionBoundary && (
-              <div style={{ 
-                marginTop: '0.5rem',
-                backgroundColor: 'white', 
-                padding: '1rem', 
-                borderRadius: '8px', 
+
+              {error && <div className="error-message">{error}</div>}
+
+              <div style={{ marginBottom: '1rem' }}>
+                <p style={{ color: '#4b5563', marginBottom: '0.5rem', lineHeight: '1.5' }}>
+                  Click on the graph below to add data points. Current mode: <strong>{pointsMode === 'train' ? 'Training' : 'Prediction'}</strong>
+                </p>
+              </div>
+
+              {/* Interactive Plot */}
+              <div style={{
+                marginBottom: '1rem',
                 border: '1px solid #e5e7eb',
-                width: '100%'
+                borderRadius: '0.75rem',
+                overflow: 'hidden',
+                position: 'relative',
+                backgroundColor: '#f9fafb',
+                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)',
+                width: '100%',
+                height: '0',
+                paddingBottom: '100%'
               }}>
-                <h3 style={{ marginBottom: '0.5rem', fontSize: '1rem', fontWeight: '500', textAlign: 'center' }}>
-                  {activeTab === 'classification' ? 'Decision Regions' : 'Regression Surface'} (k={neighbors})
-                </h3>
-                <div style={{ 
-                  width: '100%',
-                  maxWidth: '500px',  
-                  margin: '0 auto',
-                  position: 'relative',
-                  paddingBottom: '50%', 
-                  border: '1px solid #e5e7eb',
-                  borderRadius: '4px',
-                  overflow: 'hidden',
-                  marginBottom: '0.5rem'
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0
                 }}>
-                  <img 
-                    src={boundaryImg}
-                    alt="KNN Decision Boundary"
-                    style={{ 
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
+                  <canvas
+                    ref={canvasRef}
+                    width={canvasDimensions.width}
+                    height={canvasDimensions.height}
+                    onClick={handleCanvasClick}
+                    onMouseMove={handleCanvasMouseMove}
+                    onMouseLeave={handleCanvasMouseLeave}
+                    style={{
+                      display: 'block',
+                      cursor: 'crosshair',
                       width: '100%',
-                      height: '100%',
-                      objectFit: 'contain'
+                      height: '100%'
                     }}
                   />
                 </div>
-                <p style={{ 
-                  color: '#6b7280', 
-                  fontSize: '0.8rem', 
-                  maxWidth: '500px', 
-                  margin: '0 auto', 
-                  textAlign: 'center',
-                  lineHeight: '1.4'
-                }}>
-                  {activeTab === 'classification' 
-                    ? 'Colored regions show how KNN divides the feature space based on training data.'
-                    : 'This surface shows predicted values across the feature space.'}
-                </p>
-              </div>
-            )}
-          </div>
-          
-          {/* Right column: Controls and small info boxes */}
-          <div style={{ 
-            width: '100%',
-            gridColumn: '2 / 3',
-            gridRow: '1 / 2',
-            display: 'flex',
-            flexDirection: 'column'
-          }}>
-            <h2 className="section-title">Controls & Results</h2>
-            
-            {/* Parameter controls */}
-            <div style={{ 
-              marginBottom: '1.5rem', 
-              backgroundColor: 'white', 
-              padding: '1.5rem', 
-              borderRadius: '6px', 
-              border: '1px solid #e5e7eb',
-              width: '100%'
-            }}>
-              <h3 style={{ marginBottom: '1.25rem', fontSize: '1.1rem', fontWeight: '500' }}>Parameters</h3>
-              
-              <div className="form-group" style={{ marginBottom: '1.5rem' }}>
-                <label htmlFor="neighbors-slider" style={{ 
-                  display: 'block', 
-                  marginBottom: '0.75rem', 
-                  fontWeight: '500', 
+
+                <div style={{
+                  position: 'absolute',
+                  bottom: '10px',
+                  right: '10px',
+                  padding: '4px 8px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                  borderRadius: '4px',
+                  fontSize: '0.8rem',
                   color: '#4b5563',
-                  fontSize: '1rem'
+                  pointerEvents: 'none'
                 }}>
-                  Number of Neighbors (k): {neighbors}
-                </label>
-                <input
-                  id="neighbors-slider"
-                  type="range"
-                  min="1"
-                  max="10"
-                  step="1"
-                  value={neighbors}
-                  onChange={(e) => setNeighbors(parseInt(e.target.value))}
-                  style={{ width: '100%' }}
-                />
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  fontSize: '0.85rem', 
-                  color: '#6b7280',
-                  marginTop: '0.5rem'
-                }}>
-                  <span>1 (More flexible)</span>
-                  <span>10 (More stable)</span>
+                  {pointsMode === 'train' ? 'Click to add training point' : 'Click to add prediction point'}
                 </div>
               </div>
-              
-              <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', fontWeight: '500' }}>
-                Interaction Mode
-              </h3>
-              
-              <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                <button
-                  onClick={() => setPointsMode('train')}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    backgroundColor: pointsMode === 'train' ? '#3b82f6' : '#e5e7eb',
-                    color: pointsMode === 'train' ? 'white' : '#4b5563',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    flex: 1,
-                    fontSize: '0.95rem'
-                  }}
-                >
-                  Training Points
-                </button>
-                <button
-                  onClick={() => setPointsMode('predict')}
-                  style={{
-                    padding: '0.75rem 1rem',
-                    backgroundColor: pointsMode === 'predict' ? '#3b82f6' : '#e5e7eb',
-                    color: pointsMode === 'predict' ? 'white' : '#4b5563',
-                    border: 'none',
-                    borderRadius: '0.5rem',
-                    cursor: 'pointer',
-                    fontWeight: '500',
-                    flex: 1,
-                    fontSize: '0.95rem'
-                  }}
-                >
-                  Prediction Points
-                </button>
-              </div>
-              
-              {pointsMode === 'train' && activeTab === 'classification' && (
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <p style={{ marginBottom: '0.75rem', color: '#4b5563', fontSize: '1rem' }}>
-                    Select class for training points:
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+
+              {/* Statistics */}
+              <div style={{
+                marginTop: '0.5rem',
+                marginBottom: '1rem',
+                backgroundColor: '#f9fafb',
+                padding: '1rem',
+                borderRadius: '0.5rem',
+                border: '1px solid #e5e7eb',
+                width: '100%'
+              }}>
+                <p style={{ fontWeight: '500', marginBottom: '0.5rem', color: '#4b5563' }}>
+                  Statistics:
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+                  <div>
+                    <strong>Training Points:</strong> {trainingPoints.length}
+                  </div>
+                  <div>
+                    <strong>Points to Predict:</strong> {predictPoints.length}
+                  </div>
+                  <div>
+                    <strong>Predictions Made:</strong> {predictions.length}
+                  </div>
+                </div>
+
+                {/* CSV Upload (Training data from CSV) */}
+                <div style={{
+                  marginTop: '0.75rem',
+                  marginBottom: '1.5rem',
+                  backgroundColor: 'white',
+                  padding: '1rem',
+                  borderRadius: '6px',
+                  border: '1px solid #e5e7eb',
+                  width: '100%'
+                }}>
+                  <h3 style={{ marginBottom: '0.75rem', fontSize: '1.05rem', fontWeight: '500' }}>Upload CSV (x1,x2,y)</h3>
+                  <input
+                    type="file"
+                    accept=".csv"
+                    onChange={(e) => setCsvFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                    style={{ marginBottom: '0.5rem' }}
+                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <input
+                      id="csv-header"
+                      type="checkbox"
+                      checked={csvHasHeader}
+                      onChange={(e) => setCsvHasHeader(e.target.checked)}
+                    />
+                    <label htmlFor="csv-header" style={{ color: '#4b5563' }}>File has header row</label>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
-                      onClick={() => setSelectedClass('1')}
+                      onClick={async () => {
+                        if (!csvFile) {
+                          setError('Please select a CSV file to upload');
+                          return;
+                        }
+
+                        try {
+                          setLoading(true);
+                          setError(null);
+                          const result = await uploadKnnCsv(csvFile, csvHasHeader);
+                          if (result.error) {
+                            setError(result.error);
+                          } else {
+                            // Map to trainingPoints format
+                            const mapped = result.X.map((row, i) => ({ x1: parseFloat(row[0]), x2: parseFloat(row[1]), y: result.y[i] }));
+                            setTrainingPoints(mapped);
+                            setPredictPoints([]);
+                            setPredictions([]);
+                          }
+                        } catch (err) {
+                          setError(err?.error || err.message || 'CSV upload failed');
+                          console.error(err);
+                        } finally {
+                          setLoading(false);
+                        }
+                      }}
                       style={{
-                        padding: '0.75rem 0.5rem',
+                        padding: '0.6rem 0.9rem',
+                        backgroundColor: '#10b981',
+                        color: 'white',
                         border: 'none',
-                        borderRadius: '0.5rem',
-                        backgroundColor: selectedClass === '1' ? 'rgba(59, 130, 246, 1)' : 'rgba(59, 130, 246, 0.1)',
-                        color: selectedClass === '1' ? 'white' : '#1e40af',
+                        borderRadius: '6px',
                         cursor: 'pointer',
-                        fontWeight: '500',
-                        flex: 1,
-                        fontSize: '0.95rem'
+                        fontWeight: '500'
                       }}
                     >
-                      Class 1
+                      Upload CSV
                     </button>
                     <button
-                      onClick={() => setSelectedClass('2')}
+                      onClick={() => { setCsvFile(null); setCsvHasHeader(true); setTrainingPoints([]); }}
                       style={{
-                        padding: '0.75rem 0.5rem',
+                        padding: '0.6rem 0.9rem',
+                        backgroundColor: '#f3f4f6',
+                        color: '#374151',
                         border: 'none',
-                        borderRadius: '0.5rem',
-                        backgroundColor: selectedClass === '2' ? 'rgba(239, 68, 68, 1)' : 'rgba(239, 68, 68, 0.1)',
-                        color: selectedClass === '2' ? 'white' : '#b91c1c',
+                        borderRadius: '6px',
                         cursor: 'pointer',
-                        fontWeight: '500',
-                        flex: 1,
-                        fontSize: '0.95rem'
+                        fontWeight: '500'
                       }}
                     >
-                      Class 2
-                    </button>
-                    <button
-                      onClick={() => setSelectedClass('3')}
-                      style={{
-                        padding: '0.75rem 0.5rem',
-                        border: 'none',
-                        borderRadius: '0.5rem',
-                        backgroundColor: selectedClass === '3' ? 'rgba(34, 197, 94, 1)' : 'rgba(34, 197, 94, 0.1)',
-                        color: selectedClass === '3' ? 'white' : '#15803d',
-                        cursor: 'pointer',
-                        fontWeight: '500',
-                        flex: 1,
-                        fontSize: '0.95rem'
-                      }}
-                    >
-                      Class 3
+                      Clear
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Decision boundary - MOVED BELOW and SMALLER */}
+              {showDecisionBoundary && (
+                <div style={{
+                  marginTop: '0.5rem',
+                  backgroundColor: 'white',
+                  padding: '1rem',
+                  borderRadius: '8px',
+                  border: '1px solid #e5e7eb',
+                  width: '100%'
+                }}>
+                  <h3 style={{ marginBottom: '0.5rem', fontSize: '1rem', fontWeight: '500', textAlign: 'center' }}>
+                    {activeTab === 'classification' ? 'Decision Regions' : 'Regression Surface'} (k={neighbors})
+                  </h3>
+                  <div style={{
+                    width: '100%',
+                    maxWidth: '500px',
+                    margin: '0 auto',
+                    position: 'relative',
+                    paddingBottom: '50%',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '4px',
+                    overflow: 'hidden',
+                    marginBottom: '0.5rem'
+                  }}>
+                    <img
+                      src={boundaryImg}
+                      alt="KNN Decision Boundary"
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'contain'
+                      }}
+                    />
+                  </div>
+                  <p style={{
+                    color: '#6b7280',
+                    fontSize: '0.8rem',
+                    maxWidth: '500px',
+                    margin: '0 auto',
+                    textAlign: 'center',
+                    lineHeight: '1.4'
+                  }}>
+                    {activeTab === 'classification'
+                      ? 'Colored regions show how KNN divides the feature space based on training data.'
+                      : 'This surface shows predicted values across the feature space.'}
+                  </p>
+                </div>
               )}
             </div>
-            
-            {/* Action buttons */}
-            <div style={{ 
-              marginBottom: '1.5rem',
-              backgroundColor: 'white', 
-              padding: '1.5rem', 
-              borderRadius: '6px', 
-              border: '1px solid #e5e7eb',
-              width: '100%'
-            }}>
-              <h3 style={{ marginBottom: '1.25rem', fontSize: '1.1rem', fontWeight: '500' }}>Actions</h3>
-              <button 
-                onClick={predictAllPoints}
-                disabled={loading || backendStatus === "disconnected" || trainingPoints.length < 1 || predictPoints.length < 1}
-                style={{
-                  width: '100%',
-                  backgroundColor: loading ? '#93c5fd' : '#3b82f6',
-                  color: 'white',
-                  padding: '0.9rem',
-                  fontSize: '1.05rem',
-                  fontWeight: '500',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: loading ? 'wait' : 'pointer',
-                  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                  opacity: (loading || backendStatus === "disconnected" || trainingPoints.length < 1 || predictPoints.length < 1) ? 0.7 : 1,
-                  marginBottom: '1.25rem'
-                }}
-              >
-                {loading ? 'Predicting...' : 'Predict Points'}
-              </button>
-              
-              <button 
-                onClick={generateDecisionBoundary}
-                disabled={loading || backendStatus === "disconnected" || trainingPoints.length < 5}
-                style={{
-                  width: '100%',
-                  backgroundColor: loading ? '#c4b5fd' : '#8b5cf6',
-                  color: 'white',
-                  padding: '0.9rem',
-                  fontSize: '1.05rem',
-                  fontWeight: '500',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: loading ? 'wait' : 'pointer',
-                  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                  opacity: (loading || backendStatus === "disconnected" || trainingPoints.length < 5) ? 0.7 : 1
-                }}
-              >
-                {loading ? 'Generating...' : activeTab === 'classification' ? 'Show Decision Regions' : 'Show Regression Surface'}
-              </button>
-            </div>
-            
-            {/* SMALLER: Legend */}
-            <div style={{ 
+
+            {/* Right column: Controls and small info boxes */}
+            <div style={{
               width: '100%',
-              backgroundColor: 'white', 
-              padding: '1rem', 
-              borderRadius: '6px', 
-              border: '1px solid #e5e7eb',
-              fontSize: '0.85rem',
-              marginBottom: '1rem'
+              gridColumn: '2 / 3',
+              gridRow: '1 / 2',
+              display: 'flex',
+              flexDirection: 'column'
             }}>
-              <h3 style={{ marginBottom: '0.75rem', fontSize: '0.95rem', fontWeight: '500' }}>Legend</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%', 
-                    backgroundColor: 'rgba(59, 130, 246, 0.7)', 
-                    border: '1px solid #333' 
-                  }}></div>
-                  <span>Class 1</span>
+              <h2 className="section-title">Controls & Results</h2>
+
+              {/* Parameter controls */}
+              <div style={{
+                marginBottom: '1.5rem',
+                backgroundColor: 'white',
+                padding: '1.5rem',
+                borderRadius: '6px',
+                border: '1px solid #e5e7eb',
+                width: '100%'
+              }}>
+                <h3 style={{ marginBottom: '1.25rem', fontSize: '1.1rem', fontWeight: '500' }}>Parameters</h3>
+
+                <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                  <label htmlFor="neighbors-slider" style={{
+                    display: 'block',
+                    marginBottom: '0.75rem',
+                    fontWeight: '500',
+                    color: '#4b5563',
+                    fontSize: '1rem'
+                  }}>
+                    Number of Neighbors (k): {neighbors}
+                  </label>
+                  <input
+                    id="neighbors-slider"
+                    type="range"
+                    min="1"
+                    max="10"
+                    step="1"
+                    value={neighbors}
+                    onChange={(e) => setNeighbors(parseInt(e.target.value))}
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: '0.85rem',
+                    color: '#6b7280',
+                    marginTop: '0.5rem'
+                  }}>
+                    <span>1 (More flexible)</span>
+                    <span>10 (More stable)</span>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%', 
-                    backgroundColor: 'rgba(239, 68, 68, 0.7)', 
-                    border: '1px solid #333' 
-                  }}></div>
-                  <span>Class 2</span>
+
+                <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', fontWeight: '500' }}>
+                  Interaction Mode
+                </h3>
+
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                  <button
+                    onClick={() => setPointsMode('train')}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      backgroundColor: pointsMode === 'train' ? '#3b82f6' : '#e5e7eb',
+                      color: pointsMode === 'train' ? 'white' : '#4b5563',
+                      border: 'none',
+                      borderRadius: '0.5rem',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      flex: 1,
+                      fontSize: '0.95rem'
+                    }}
+                  >
+                    Training Points
+                  </button>
+                  <button
+                    onClick={() => setPointsMode('predict')}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      backgroundColor: pointsMode === 'predict' ? '#3b82f6' : '#e5e7eb',
+                      color: pointsMode === 'predict' ? 'white' : '#4b5563',
+                      border: 'none',
+                      borderRadius: '0.5rem',
+                      cursor: 'pointer',
+                      fontWeight: '500',
+                      flex: 1,
+                      fontSize: '0.95rem'
+                    }}
+                  >
+                    Prediction Points
+                  </button>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%', 
-                    backgroundColor: 'rgba(34, 197, 94, 0.7)', 
-                    border: '1px solid #333' 
-                  }}></div>
-                  <span>Class 3</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%',
-                    backgroundColor: 'rgba(156, 163, 175, 0.7)',
-                    border: '1px solid #333'
-                  }}></div>
-                  <span>Unpredicted</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%',
-                    backgroundColor: 'white',
-                    border: '2px dashed #333'
-                  }}></div>
-                  <span>Predicted</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ 
-                    width: '12px', 
-                    height: '12px', 
-                    borderRadius: '50%',
-                    backgroundColor: 'rgba(30, 64, 175, 0.9)',
-                    border: '2px solid #000'
-                  }}></div>
-                  <span>Neighbors</span>
+
+                {pointsMode === 'train' && activeTab === 'classification' && (
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <p style={{ marginBottom: '0.75rem', color: '#4b5563', fontSize: '1rem' }}>
+                      Select class for training points:
+                    </p>
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                      <button
+                        onClick={() => setSelectedClass('1')}
+                        style={{
+                          padding: '0.75rem 0.5rem',
+                          border: 'none',
+                          borderRadius: '0.5rem',
+                          backgroundColor: selectedClass === '1' ? 'rgba(59, 130, 246, 1)' : 'rgba(59, 130, 246, 0.1)',
+                          color: selectedClass === '1' ? 'white' : '#1e40af',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          flex: 1,
+                          fontSize: '0.95rem'
+                        }}
+                      >
+                        Class 1
+                      </button>
+                      <button
+                        onClick={() => setSelectedClass('2')}
+                        style={{
+                          padding: '0.75rem 0.5rem',
+                          border: 'none',
+                          borderRadius: '0.5rem',
+                          backgroundColor: selectedClass === '2' ? 'rgba(239, 68, 68, 1)' : 'rgba(239, 68, 68, 0.1)',
+                          color: selectedClass === '2' ? 'white' : '#b91c1c',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          flex: 1,
+                          fontSize: '0.95rem'
+                        }}
+                      >
+                        Class 2
+                      </button>
+                      <button
+                        onClick={() => setSelectedClass('3')}
+                        style={{
+                          padding: '0.75rem 0.5rem',
+                          border: 'none',
+                          borderRadius: '0.5rem',
+                          backgroundColor: selectedClass === '3' ? 'rgba(34, 197, 94, 1)' : 'rgba(34, 197, 94, 0.1)',
+                          color: selectedClass === '3' ? 'white' : '#15803d',
+                          cursor: 'pointer',
+                          fontWeight: '500',
+                          flex: 1,
+                          fontSize: '0.95rem'
+                        }}
+                      >
+                        Class 3
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons */}
+              <div style={{
+                marginBottom: '1.5rem',
+                backgroundColor: 'white',
+                padding: '1.5rem',
+                borderRadius: '6px',
+                border: '1px solid #e5e7eb',
+                width: '100%'
+              }}>
+                <h3 style={{ marginBottom: '1.25rem', fontSize: '1.1rem', fontWeight: '500' }}>Actions</h3>
+                <button
+                  onClick={predictAllPoints}
+                  disabled={loading || backendStatus === "disconnected" || trainingPoints.length < 1 || predictPoints.length < 1}
+                  style={{
+                    width: '100%',
+                    backgroundColor: loading ? '#93c5fd' : '#3b82f6',
+                    color: 'white',
+                    padding: '0.9rem',
+                    fontSize: '1.05rem',
+                    fontWeight: '500',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: loading ? 'wait' : 'pointer',
+                    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                    opacity: (loading || backendStatus === "disconnected" || trainingPoints.length < 1 || predictPoints.length < 1) ? 0.7 : 1,
+                    marginBottom: '1.25rem'
+                  }}
+                >
+                  {loading ? 'Predicting...' : 'Predict Points'}
+                </button>
+
+                <button
+                  onClick={generateDecisionBoundary}
+                  disabled={loading || backendStatus === "disconnected" || trainingPoints.length < 5}
+                  style={{
+                    width: '100%',
+                    backgroundColor: loading ? '#c4b5fd' : '#8b5cf6',
+                    color: 'white',
+                    padding: '0.9rem',
+                    fontSize: '1.05rem',
+                    fontWeight: '500',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: loading ? 'wait' : 'pointer',
+                    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                    opacity: (loading || backendStatus === "disconnected" || trainingPoints.length < 5) ? 0.7 : 1
+                  }}
+                >
+                  {loading ? 'Generating...' : activeTab === 'classification' ? 'Show Decision Regions' : 'Show Regression Surface'}
+                </button>
+              </div>
+
+              {/* SMALLER: Legend */}
+              <div style={{
+                width: '100%',
+                backgroundColor: 'white',
+                padding: '1rem',
+                borderRadius: '6px',
+                border: '1px solid #e5e7eb',
+                fontSize: '0.85rem',
+                marginBottom: '1rem'
+              }}>
+                <h3 style={{ marginBottom: '0.75rem', fontSize: '0.95rem', fontWeight: '500' }}>Legend</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(59, 130, 246, 0.7)',
+                      border: '1px solid #333'
+                    }}></div>
+                    <span>Class 1</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(239, 68, 68, 0.7)',
+                      border: '1px solid #333'
+                    }}></div>
+                    <span>Class 2</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(34, 197, 94, 0.7)',
+                      border: '1px solid #333'
+                    }}></div>
+                    <span>Class 3</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(156, 163, 175, 0.7)',
+                      border: '1px solid #333'
+                    }}></div>
+                    <span>Unpredicted</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'white',
+                      border: '2px dashed #333'
+                    }}></div>
+                    <span>Predicted</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: 'rgba(30, 64, 175, 0.9)',
+                      border: '2px solid #000'
+                    }}></div>
+                    <span>Neighbors</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          /* Complex Data Mode Content */
+          <div style={{ width: '100%', maxWidth: '800px', margin: '0 auto' }}>
+
+            {/* Step Indicator */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2rem', position: 'relative' }}>
+              <div style={{ position: 'absolute', top: '15px', left: '0', right: '0', height: '2px', backgroundColor: '#e5e7eb', zIndex: 0 }}></div>
+              {['Upload Data', 'Select Variables', 'Results'].map((step, index) => (
+                <div key={index} style={{ zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div style={{
+                    width: '32px', height: '32px', borderRadius: '50%',
+                    backgroundColor: complexStep >= index ? '#3b82f6' : '#e5e7eb',
+                    color: complexStep >= index ? 'white' : '#6b7280',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 'bold', marginBottom: '0.5rem'
+                  }}>
+                    {index + 1}
+                  </div>
+                  <span style={{ fontSize: '0.875rem', color: complexStep >= index ? '#1f2937' : '#9ca3af' }}>{step}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Error Message */}
+            {error && (
+              <div className="error-message" style={{ marginBottom: '1.5rem' }}>
+                {error}
+              </div>
+            )}
+
+            {/* Step 0: Upload */}
+            {complexStep === 0 && (
+              <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '0.75rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', textAlign: 'center' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem' }}>Upload your Dataset</h2>
+                <p style={{ color: '#6b7280', marginBottom: '2rem' }}>Supported formats: CSV, JSON, TXT. (First row as header)</p>
+
+                <div style={{ border: '2px dashed #e5e7eb', borderRadius: '0.75rem', padding: '3rem', marginBottom: '1.5rem' }}>
+                  <input
+                    type="file"
+                    id="file-upload"
+                    accept=".csv,.json,.txt"
+                    onChange={handleFileUpload}
+                    style={{ marginBottom: '1rem' }}
+                  />
+                </div>
+                {loading && <div style={{ color: '#3b82f6' }}>Uploading and parsing...</div>}
+              </div>
+            )}
+
+            {/* Step 1: Variable Selection */}
+            {complexStep === 1 && (
+              <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '0.75rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem' }}>Select Variables</h2>
+                <p style={{ color: '#6b7280', marginBottom: '2rem' }}>Total Rows: <strong>{totalRows}</strong></p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                  {/* Features Selection */}
+                  <div>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: '#1f2937' }}>Features (X)</h3>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '0.5rem', padding: '1rem' }}>
+                      {availableColumns.map(col => (
+                        <div key={`feat-${col}`} style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
+                          <input
+                            type="checkbox"
+                            id={`feat-${col}`}
+                            checked={selectedFeatures.includes(col)}
+                            onChange={() => toggleFeature(col)}
+                            disabled={targetColumn === col}
+                            style={{ marginRight: '0.5rem' }}
+                          />
+                          <label htmlFor={`feat-${col}`} style={{ cursor: 'pointer' }}>{col}</label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Target Selection */}
+                  <div>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem', color: '#1f2937' }}>Target (y)</h3>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '0.5rem', padding: '1rem' }}>
+                      {availableColumns.map(col => (
+                        <div key={`target-${col}`} style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
+                          <input
+                            type="radio"
+                            name="target-col"
+                            id={`target-${col}`}
+                            checked={targetColumn === col}
+                            onChange={() => setTargetColumn(col)}
+                            disabled={selectedFeatures.includes(col)}
+                            style={{ marginRight: '0.5rem' }}
+                          />
+                          <label htmlFor={`target-${col}`} style={{ cursor: 'pointer' }}>{col}</label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <label style={{ marginRight: '1rem', fontWeight: '500' }}>Task Type:</label>
+                    <select
+                      value={isClassification ? 'class' : 'reg'}
+                      onChange={(e) => setIsClassification(e.target.value === 'class')}
+                      style={{ padding: '0.5rem', borderRadius: '0.375rem', border: '1px solid #d1d5db' }}
+                    >
+                      <option value="class">Classification</option>
+                      <option value="reg">Regression</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ marginRight: '1rem', fontWeight: '500' }}>Neighbors (k):</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={neighbors}
+                      onChange={(e) => setNeighbors(parseInt(e.target.value))}
+                      style={{ padding: '0.5rem', borderRadius: '0.375rem', border: '1px solid #d1d5db', width: '60px' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '2rem', textAlign: 'right' }}>
+                  <button
+                    onClick={() => setComplexStep(0)}
+                    style={{ padding: '0.75rem 1.5rem', marginRight: '1rem', backgroundColor: '#f3f4f6', color: '#4b5563', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleTrainComplexModel}
+                    disabled={loading || selectedFeatures.length === 0 || !targetColumn}
+                    style={{
+                      padding: '0.75rem 1.5rem',
+                      backgroundColor: '#3b82f6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '0.375rem',
+                      cursor: loading ? 'wait' : 'pointer',
+                      opacity: (selectedFeatures.length === 0 || !targetColumn) ? 0.5 : 1
+                    }}
+                  >
+                    {loading ? 'Training...' : 'Train Model'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Visualization */}
+            {complexStep === 2 && complexVisualization && (
+              <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '0.75rem', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}>
+                <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem' }}>Model Results</h2>
+
+                {/* Metrics */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                  {complexModelMetrics.accuracy && (
+                    <div style={{ padding: '1rem', backgroundColor: '#eff6ff', borderRadius: '0.5rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.875rem', color: '#1e40af' }}>Accuracy</div>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1e3a8a' }}>{complexModelMetrics.accuracy}</div>
+                    </div>
+                  )}
+                  {complexModelMetrics.mse && (
+                    <div style={{ padding: '1rem', backgroundColor: '#eff6ff', borderRadius: '0.5rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.875rem', color: '#1e40af' }}>MSE</div>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1e3a8a' }}>{complexModelMetrics.mse}</div>
+                    </div>
+                  )}
+                  {complexModelMetrics.r2 && (
+                    <div style={{ padding: '1rem', backgroundColor: '#eff6ff', borderRadius: '0.5rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.875rem', color: '#1e40af' }}>R² Score</div>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1e3a8a' }}>{complexModelMetrics.r2}</div>
+                    </div>
+                  )}
+                  <div style={{ padding: '1rem', backgroundColor: '#f3f4f6', borderRadius: '0.5rem', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.875rem', color: '#4b5563' }}>Visualization</div>
+                    <div style={{ fontSize: '1rem', fontWeight: 'bold', color: '#1f2937' }}>
+                      {complexVisualization.type === 'PCA_2D' ? 'PCA Projection (2D)' : '2D Scatter Plot'}
+                    </div>
+                  </div>
+                </div>
+
+
+
+                {/* Visualization Canvas */}
+                <div style={{
+                  width: '100%',
+                  marginBottom: '2rem'
+                }}>
+                  {complexVisualization && (
+                    <ComplexKNNVisualization
+                      data={complexVisualization}
+                      isClassification={isClassification}
+                    />
+                  )}
+                </div>
+
+                <div style={{ textAlign: 'center' }}>
+                  <button
+                    onClick={resetComplexData}
+                    style={{ padding: '0.75rem 1.5rem', backgroundColor: '#e5e7eb', color: '#4b5563', border: 'none', borderRadius: '0.375rem', cursor: 'pointer' }}
+                  >
+                    Upload New Dataset
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
-      
+
       {/* Point Value Dialog */}
       {showPointDialog && (
-        <div 
+        <div
           style={{
             position: 'fixed',
             top: dialogPosition.y,
@@ -1306,7 +1658,7 @@ function KNN() {
           </div>
         </div>
       )}
-      
+
       {/* Loading spinner */}
       {loading && (
         <div style={{

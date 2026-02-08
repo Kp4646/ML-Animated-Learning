@@ -12,25 +12,32 @@ import PCA from './pages/PCA';
 import SVM from './pages/SVM';
 import ANN from './pages/ANN';
 import DBScan from './pages/DBScan';
+import { AuthProvider } from './context/AuthContext';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
 
 function App() {
   return (
     <Router>
-      <MainLayout>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/reg" element={<Reg />} />
-          <Route path="/knn" element={<KNN />} />
-          <Route path="/d-trees" element={<DTrees />} />
-          <Route path="/kmeans" element={<KMeans />} />
-          <Route path="/about" element={<About />} />
-          <Route path="/docs" element={<Docs />} />
-          <Route path="/pca" element={<PCA />} />
-          <Route path='/svm' element={<SVM />} />
-          <Route path='/ann' element={<ANN />} />
-          <Route path='/DBScan' element={<DBScan />} />
-        </Routes>
-      </MainLayout>
+      <AuthProvider>
+        <MainLayout>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
+            <Route path="/reg" element={<Reg />} />
+            <Route path="/knn" element={<KNN />} />
+            <Route path="/d-trees" element={<DTrees />} />
+            <Route path="/kmeans" element={<KMeans />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/docs" element={<Docs />} />
+            <Route path="/pca" element={<PCA />} />
+            <Route path='/svm' element={<SVM />} />
+            <Route path='/ann' element={<ANN />} />
+            <Route path='/DBScan' element={<DBScan />} />
+          </Routes>
+        </MainLayout>
+      </AuthProvider>
     </Router>
   );
 }

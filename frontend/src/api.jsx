@@ -1,8 +1,8 @@
 import axios from 'axios';
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 export const getModels = async () => {
-  const response = await axios.get(`${API_URL}`);
+  const response = await axios.get(`${API_URL.replace('/api', '')}`); // Root endpoint
   return response.data;
 };
 
@@ -140,6 +140,34 @@ export const uploadKnnCsv = async (file, hasHeader = true) => {
   }
 };
 
+export const uploadKnnData = async (file) => {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await axios.post(`${API_URL}/knn/upload`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error('Error uploading KNN data:', error);
+    throw error.response?.data || error;
+  }
+};
+
+export const trainKnnModel = async (data) => {
+  try {
+    const response = await axios.post(`${API_URL}/knn/train`, data);
+    return response.data;
+  } catch (error) {
+    console.error('Error training KNN model:', error);
+    throw error.response?.data || error;
+  }
+};
+
 // Decision Trees
 export const runDTrees = async (data) => {
   try {
@@ -233,10 +261,36 @@ export const getDBSCANSampleData = async (options) => {
   }
 };
 
+// Decision Tree Complex Data Support
+export const uploadDTreesData = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const response = await axios.post(`${API_URL}/dtree/upload`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : error;
+  }
+};
+
+export const trainDTreesModel = async (params) => {
+  try {
+    const response = await axios.post(`${API_URL}/dtree/train`, params);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : error;
+  }
+};
+
 // Health check
 export const checkHealth = async () => {
   try {
-    const response = await axios.get(`${API_URL}/api/health`)
+    const response = await axios.get(`${API_URL}/health`);
 
     return response.data;
   } catch (error) {

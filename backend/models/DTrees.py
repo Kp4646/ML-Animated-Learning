@@ -5,7 +5,10 @@ from sklearn.tree import export_graphviz
 from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
 import base64
 from io import BytesIO, StringIO
-import pydot
+try:
+    import pydot
+except ImportError:
+    pydot = None
 from scipy import sparse
 
 # Custom Node class for decision trees

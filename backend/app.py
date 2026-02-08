@@ -259,6 +259,255 @@ def knn_decision_boundary():
         print(f"Traceback: {error_traceback}")
         return jsonify({"error": str(e), "traceback": error_traceback}), 500
 
+# ==========================================
+# New Complex Data Support for KNN
+# ==========================================
+from utils.data_processor import DataProcessor
+data_processor = DataProcessor()
+
+@app.route('/api/knn/upload', methods=['POST'])
+def knn_upload_complex():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No selected file"}), 400
+            
+        result = data_processor.parse_file(file, file.filename)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/knn/train', methods=['POST'])
+def knn_train_complex():
+    try:
+        data = request.json
+        feature_cols = data.get('features')
+        target_col = data.get('target')
+        k = int(data.get('n_neighbors', 5))
+        is_classification = data.get('is_classification', True)
+        
+        if not feature_cols or not target_col:
+            return jsonify({"error": "Features and target column must be selected"}), 400
+            
+        # Preprocess data
+        X, y = data_processor.preprocess(feature_cols, target_col, is_classification)
+        metadata = data_processor.get_metadata()
+        
+        # Split data (Simple split for demo, or just use full data for visualization context)
+        # For this visualizer, we might want to return the processed data so frontend can visualize it
+        # If dimensions > 2, we might need PCA.
+        
+        response_data = {
+            "metadata": metadata,
+            "n_samples": len(X),
+            "n_features": X.shape[1],
+            "classes": list(map(str, np.unique(y))) if is_classification else "Regression",
+        }
+        
+        # If 2 features, return them directly for 2D plot
+        if X.shape[1] == 2:
+            response_data["X"] = X.tolist()
+            response_data["y"] = y.tolist()
+            response_data["visualization_type"] = "2D"
+        else:
+            # If > 2 features, run PCA to project to 2D
+             # Import run_pca internally to avoid circular deps if any
+            from models.PCA import run_pca_internal
+            pca_result = run_pca_internal(X, n_components=2)
+            response_data["X"] = pca_result.tolist()
+            response_data["y"] = y.tolist()
+            response_data["visualization_type"] = "PCA_2D"
+            
+        # Add accuracy score (Train on 80%, Test on 20%)
+        from sklearn.model_selection import train_test_split
+        from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score, confusion_matrix
+        
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        error_rates = []
+        k_range = list(range(1, 21)) # Test K from 1 to 20
+        
+        # Calculate Error vs K
+        for k_val in k_range:
+            if k_val >= len(X_train): break # Can't have k > n_samples
+            if is_classification:
+                temp_model = KNeighborsClassifier(n_neighbors=k_val)
+                temp_model.fit(X_train, y_train)
+                pred_i = temp_model.predict(X_test)
+                error_rates.append(1 - accuracy_score(y_test, pred_i)) # Error rate = 1 - Accuracy
+            else:
+                temp_model = KNeighborsRegressor(n_neighbors=k_val)
+                temp_model.fit(X_train, y_train)
+                pred_i = temp_model.predict(X_test)
+                error_rates.append(mean_squared_error(y_test, pred_i)) # MSE
+        
+        response_data["validation_curve"] = {
+            "k_values": k_range[:len(error_rates)],
+            "errors": error_rates
+        }
+
+        # Train final model with user selected K
+        final_k = min(k, len(X_train))
+        if is_classification:
+            model = KNeighborsClassifier(n_neighbors=final_k)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+            score = accuracy_score(y_test, preds)
+            
+            # Confusion Matrix Data
+            cm = confusion_matrix(y_test, preds)
+            response_data["metrics"] = {"accuracy": f"{score:.2f}"}
+            response_data["confusion_matrix"] = cm.tolist()
+            response_data["y_test"] = y_test.tolist()
+            response_data["y_pred"] = preds.tolist() # For detailed analysis if needed
+            
+        else:
+            model = KNeighborsRegressor(n_neighbors=final_k)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+            mse = mean_squared_error(y_test, preds)
+            r2 = r2_score(y_test, preds)
+            
+            response_data["metrics"] = {"mse": f"{mse:.2f}", "r2": f"{r2:.2f}"}
+            response_data["y_test"] = y_test.tolist()
+            response_data["y_pred"] = preds.tolist()
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+# ==========================================
+# Decision Tree Complex Data Support
+# ==========================================
+
+@app.route('/api/dtree/upload', methods=['POST'])
+def dtree_upload_complex():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No selected file"}), 400
+            
+        result = data_processor.parse_file(file, file.filename)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@app.route('/api/dtree/train', methods=['POST'])
+def dtree_train_complex():
+    try:
+        data = request.json
+        feature_cols = data.get('features')
+        target_col = data.get('target')
+        
+        # DT Parameters
+        max_depth = int(data.get('max_depth', 3))
+        min_samples_split = int(data.get('min_samples_split', 2))
+        criterion = data.get('criterion', 'gini')
+        is_classification = data.get('is_classification', True)
+        
+        if not feature_cols or not target_col:
+            return jsonify({"error": "Features and target column must be selected"}), 400
+            
+        # Preprocess data
+        X, y = data_processor.preprocess(feature_cols, target_col, is_classification)
+        metadata = data_processor.get_metadata()
+        
+        response_data = {
+            "metadata": metadata,
+            "n_samples": len(X),
+            "n_features": X.shape[1],
+            "classes": list(map(str, np.unique(y))) if is_classification else "Regression",
+        }
+        
+        # Visualization Data (2D Projection if needed)
+        if X.shape[1] == 2:
+            response_data["X"] = X.tolist()
+            response_data["y"] = y.tolist()
+            response_data["visualization_type"] = "2D"
+        else:
+            from models.PCA import run_pca_internal
+            pca_result = run_pca_internal(X, n_components=2)
+            response_data["X"] = pca_result.tolist()
+            response_data["y"] = y.tolist()
+            response_data["visualization_type"] = "PCA_2D"
+
+        # Train & Evaluate
+        from sklearn.model_selection import train_test_split
+        from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score, confusion_matrix
+        
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Error vs Depth Calculation
+        error_rates = []
+        depth_range = list(range(1, 16)) # Test depth from 1 to 15
+        
+        for d in depth_range:
+            if is_classification:
+                temp_model = DecisionTreeClassifier(max_depth=d, criterion=criterion, min_samples_split=min_samples_split, random_state=42)
+                temp_model.fit(X_train, y_train)
+                pred_i = temp_model.predict(X_test)
+                error_rates.append(1 - accuracy_score(y_test, pred_i))
+            else:
+                temp_model = DecisionTreeRegressor(max_depth=d, min_samples_split=min_samples_split, random_state=42)
+                temp_model.fit(X_train, y_train)
+                pred_i = temp_model.predict(X_test)
+                error_rates.append(mean_squared_error(y_test, pred_i))
+                
+        response_data["validation_curve"] = {
+            "k_values": depth_range, # Reusing 'k_values' key for compatibility with visualization component (it expects 'k_values' for x-axis)
+            "errors": error_rates,
+            "x_label": "Max Depth"
+        }
+
+        # Final Model
+        if is_classification:
+            model = DecisionTreeClassifier(max_depth=max_depth, criterion=criterion, min_samples_split=min_samples_split, random_state=42)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+            score = accuracy_score(y_test, preds)
+            
+            cm = confusion_matrix(y_test, preds)
+            response_data["metrics"] = {"accuracy": f"{score:.2f}"}
+            response_data["confusion_matrix"] = cm.tolist()
+            response_data["y_test"] = y_test.tolist()
+            response_data["y_pred"] = preds.tolist()
+        else:
+            model = DecisionTreeRegressor(max_depth=max_depth, min_samples_split=min_samples_split, random_state=42)
+            model.fit(X_train, y_train)
+            preds = model.predict(X_test)
+            mse = mean_squared_error(y_test, preds)
+            r2 = r2_score(y_test, preds)
+            
+            response_data["metrics"] = {"mse": f"{mse:.2f}", "r2": f"{r2:.2f}"}
+            response_data["y_test"] = y_test.tolist()
+            response_data["y_pred"] = preds.tolist()
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/kmeans', methods=['POST'])
 def kmeans_clustering():
     data = request.json
@@ -1467,6 +1716,31 @@ def generate_regression_sample_data():
     except Exception as e:
         print(f"Error generating sample data: {str(e)}")
         return jsonify({"error": f"Error generating sample data: {str(e)}"}), 500
+
+@app.route('/api/regression', methods=['POST'])
+def polynomial_regression():
+    try:
+        data = request.json
+        if not data:
+             return jsonify({"error": "No data provided"}), 400
+             
+        # Extract parameters
+        degree = int(data.get('degree', 1))
+        alpha = float(data.get('alpha', 0.01))
+        iterations = int(data.get('iterations', 100))
+        
+        # Log request
+        print(f"Polynomial regression request: degree={degree}, alpha={alpha}, iterations={iterations}")
+        
+        # Run model
+        result = run_polynomial_regression(data, degree=degree, alpha=alpha, iterations=iterations)
+        return jsonify(result)
+        
+    except Exception as e:
+        import traceback
+        print(f"Error in polynomial regression endpoint: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 if __name__ == '__main__':
   debug_mode = os.environ.get('FLASK_ENV') == 'development'
