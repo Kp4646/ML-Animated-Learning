@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: ml-animated-learning-backend
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: gunicorn backend.wsgi:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0

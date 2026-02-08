@@ -8,13 +8,4 @@ matplotlib
 seaborn
 joblib
 gunicorn
-flask
-flask-cors
-python-dotenv
-numpy
-pandas
-scikit-learn
-matplotlib
-seaborn
-joblib
-gunicorn
+

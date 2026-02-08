@@ -21,17 +21,35 @@ Since your project has a separate `frontend` folder, we have configured `netlify
    - If these are not pre-filled, enter them manually.
 7. Click **"Deploy site"**.
 
-## Important Note regarding Backend
-Your frontend is currently configured to talk to a backend at `http://localhost:5000`.
-- **The deployed frontend will NOT be able to communicate with your local backend.**
-- You must deploy your Python backend to a service like **Render**, **Heroku**, or **Railway**.
-- Once the backend is deployed, you will get a public URL (e.g., `https://my-api.onrender.com`).
-- You must then update your frontend configuration:
-  1. Go to `frontend/.env` (or create it).
-  2. Add: `REACT_APP_API_URL=https://my-api.onrender.com/api`
-  3. Push the changes to GitHub.
-  4. Netlify will automatically redeploy.
+## Backend Deployment (Render)
+
+Since your frontend needs a backend to function, you must deploy the Python backend.
+
+1. **Sign up/Log in to [Render](https://render.com/)**.
+2. Click **"New"** > **"Blueprint"**.
+3. Connect your GitHub repository (`ML-Animated-Learning`).
+4. Render will detect the `render.yaml` file and automatically configure the service:
+   - **Name**: `ml-animated-learning-backend`
+   - **Environment**: Python
+   - **Build Command**: `pip install -r backend/requirements.txt`
+   - **Start Command**: `gunicorn backend.wsgi:app`
+5. Click **"Apply"** to deploy.
+6. Once deployed, copy the **Service URL** (e.g., `https://ml-animated-learning-backend.onrender.com`).
+
+## Connecting Frontend to Backend
+
+1. In your local project, open `frontend/src/api.jsx`.
+2. Locate the `API_URL` constant.
+   - It likely defaults to `http://localhost:5000/api`.
+3. You should use an environment variable. Create or edit `frontend/.env`:
+   ```env
+   REACT_APP_API_URL=https://your-render-url.onrender.com/api
+   ```
+   *(Make sure to append `/api` if your backend expects it, or just the base URL depending on your code).*
+4. Commit and push this change to GitHub.
+5. Netlify will automatically rebuild your frontend with the new API URL.
 
 ## Troubleshooting
-- If the build fails, check the "Deploy log" in Netlify.
-- Common issue: CI=true treating warnings as errors. Setup Environment Variable `CI=false` in Netlify Site Settings > Build & deploy > Environment if needed.
+- **Netlify**: Check "Deploy log". Ensure `CI=false` environment variable is set if warnings cause failure.
+- **Render**: Check "Logs" tab. If imports fail, ensure `backend` is treated as a module or paths are correct.
+
