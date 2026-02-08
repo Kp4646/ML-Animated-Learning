@@ -288,3 +288,6 @@ If you encounter issues:
 - [React](https://reactjs.org/) for the frontend framework
 - [Framer Motion](https://www.framer.com/motion/) for smooth animations
 - [Flask](https://flask.palletsprojects.com/) for the backend API
+#   F i n a l - A n i m a t e d - L e a r n i n g  
+ #   F i n a l - A n i m a t e d - L e a r n i n g  
+ 
